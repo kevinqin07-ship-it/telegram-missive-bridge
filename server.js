@@ -181,4 +181,24 @@ app.post('/missive-webhook', async (req, res) => {
 
   console.log(`[Missive→Telegram] conversationId=${conversationId} chatId=${chatId} text="${plainText}"`);
 
-  await sendToTelegram(chat
+  await sendToTelegram(chatId, plainText);
+});
+
+// ─────────────────────────────────────────────
+// Health check
+// ─────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Telegram-Missive bridge is running' });
+});
+
+// Init DB then start server
+db.init()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server listening on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('[DB] Failed to initialize database:', err);
+    process.exit(1);
+  });
