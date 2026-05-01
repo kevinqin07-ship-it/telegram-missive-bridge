@@ -41,6 +41,7 @@ async function sendToMissive(chatId, senderName, text, conversationId = null) {
         id:   String(chatId),
         name: senderName
       },
+      to_fields: [{ id: String(chatId), name: senderName }],
       body: text,
       ...(conversationId && { conversation_id: conversationId })
     }
@@ -165,6 +166,7 @@ app.get('/debug-missive', async (req, res) => {
     messages: {
       account: MISSIVE_CHANNEL_ID,
       from_field: { id: '9999001', name: 'Debug User' },
+      to_fields: [{ id: '9999001', name: 'Debug User' }],
       body: 'Debug test from server'
     }
   };
