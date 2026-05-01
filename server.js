@@ -40,10 +40,18 @@ async function createMissiveConversation(chatId, senderName, text) {
           name: senderName,
           address: `telegram_${chatId}@telegram.bridge`
         },
+        to_fields: [
+          {
+            name: 'Missive Connect Bot',
+            address: 'missiveconnect@telegram.bridge'
+          }
+        ],
         body: `<p>${escapeHtml(text)}</p>`
       }
     }
   };
+
+  console.log('[Missive] createConversation payload:', JSON.stringify(body));
 
   const res = await fetch(`${MISSIVE_API}/conversations`, {
     method: 'POST',
@@ -56,22 +64,30 @@ async function createMissiveConversation(chatId, senderName, text) {
 
   if (!res.ok) {
     const err = await res.text();
-    console.error('[Missive] createConversation failed:', err);
+    console.error('[Missive] createConversation failed status=%d body=%s', res.status, err);
     return null;
   }
 
   const data = await res.json();
-  return data.conversations?.id || null;
+  console.log('[Missive] createConversation response:', JSON.stringify(data));
+  // Missive returns { conversation: { id: '...' } } (singular)
+  return data.conversation?.id || null;
 }
 
-async function replyInMissiveConversation(conversationId, senderName, text) {
+async function replyInMissiveConversation(conversationId, chatId, senderName, text) {
   const body = {
     drafts: {
       body: `<p>${escapeHtml(text)}</p>`,
       from_field: {
         name: senderName,
-        address: `telegram_${conversationId}@telegram.bridge`
+        address: `telegram_${chatId}@telegram.bridge`
       },
+      to_fields: [
+        {
+          name: 'Missive Connect Bot',
+          address: 'missiveconnect@telegram.bridge'
+        }
+      ],
       conversation: conversationId
     }
   };
@@ -87,7 +103,9 @@ async function replyInMissiveConversation(conversationId, senderName, text) {
 
   if (!res.ok) {
     const err = await res.text();
-    console.error('[Missive] replyInConversation failed:', err);
+    console.error('[Missive] replyInConversation failed status=%d body=%s', res.status, err);
+  } else {
+    console.log('[Missive] replyInConversation succeeded for conversationId=%s', conversationId);
   }
 }
 
@@ -120,7 +138,7 @@ app.post('/telegram-webhook', async (req, res) => {
 
   if (existingConversationId) {
     // Thread the reply into the existing Missive conversation
-    await replyInMissiveConversation(existingConversationId, senderName, text);
+    await replyInMissiveConversation(existingConversationId, chatId, senderName, text);
   } else {
     // New conversation
     const conversationId = await createMissiveConversation(chatId, senderName, text);
@@ -163,24 +181,4 @@ app.post('/missive-webhook', async (req, res) => {
 
   console.log(`[Missive→Telegram] conversationId=${conversationId} chatId=${chatId} text="${plainText}"`);
 
-  await sendToTelegram(chatId, plainText);
-});
-
-// ─────────────────────────────────────────────
-// Health check
-// ─────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Telegram-Missive bridge is running' });
-});
-
-// Init DB then start server
-db.init()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
-    });
-  })
-  .catch(err => {
-    console.error('[DB] Failed to initialize database:', err);
-    process.exit(1);
-  });
+  await sendToTelegram(chat
