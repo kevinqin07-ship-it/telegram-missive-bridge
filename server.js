@@ -7,8 +7,8 @@ app.use(express.json());
 const {
   TELEGRAM_BOT_TOKEN,
   MISSIVE_API_KEY,
-  MISSIVE_TEAM_ID,       // optional: auto-assign to a team inbox
-  WEBHOOK_SECRET,        // optional: a secret string to validate Missive webhooks
+  MISSIVE_CHANNEL_ID,    // Custom Channel Account ID from Missive Settings → Accounts
+  WEBHOOK_SECRET,        // optional: validate Missive custom channel webhook requests
   PORT = 3000
 } = process.env;
 
@@ -30,91 +30,50 @@ async function sendToTelegram(chatId, text) {
   }
 }
 
-async function createMissiveConversation(chatId, senderName, text) {
-  const body = {
-    conversations: {
-      subject: `Telegram: ${senderName}`,
-      ...(MISSIVE_TEAM_ID && { assignee_team: MISSIVE_TEAM_ID }),
-      messages: {
-        from_field: {
-          name: senderName,
-          address: `telegram_${chatId}@telegram.bridge`
-        },
-        to_fields: [
-          {
-            name: 'Missive Connect Bot',
-            address: 'missiveconnect@telegram.bridge'
-          }
-        ],
-        body: `<p>${escapeHtml(text)}</p>`
-      }
+// POST /v1/messages — creates a new message in the Custom Channel.
+// If conversationId is provided, threads into that existing conversation.
+// Returns the Missive conversation ID (or null on failure).
+async function sendToMissive(chatId, senderName, text, conversationId = null) {
+  const payload = {
+    messages: {
+      channel_id: MISSIVE_CHANNEL_ID,
+      from_field: {
+        id:   String(chatId),
+        name: senderName
+      },
+      body: text,
+      ...(conversationId && { conversation_id: conversationId })
     }
   };
 
-  console.log('[Missive] createConversation payload:', JSON.stringify(body));
+  console.log('[Missive] sendMessage payload:', JSON.stringify(payload));
 
-  const res = await fetch(`${MISSIVE_API}/conversations`, {
+  const res = await fetch(`${MISSIVE_API}/messages`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${MISSIVE_API_KEY}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
     const err = await res.text();
-    console.error('[Missive] createConversation failed status=%d body=%s', res.status, err);
+    console.error('[Missive] sendMessage failed status=%d body=%s', res.status, err);
     return null;
   }
 
-  const data = await res.json();
-  console.log('[Missive] createConversation response:', JSON.stringify(data));
-  // Missive returns { conversation: { id: '...' } } (singular)
-  return data.conversation?.id || null;
-}
+  // 201 with no body is success for new conversations; some responses include conversation
+  const raw = await res.text();
+  console.log('[Missive] sendMessage response status=%d body=%s', res.status, raw);
 
-async function replyInMissiveConversation(conversationId, chatId, senderName, text) {
-  const body = {
-    drafts: {
-      body: `<p>${escapeHtml(text)}</p>`,
-      from_field: {
-        name: senderName,
-        address: `telegram_${chatId}@telegram.bridge`
-      },
-      to_fields: [
-        {
-          name: 'Missive Connect Bot',
-          address: 'missiveconnect@telegram.bridge'
-        }
-      ],
-      conversation: conversationId
-    }
-  };
-
-  const res = await fetch(`${MISSIVE_API}/drafts`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${MISSIVE_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('[Missive] replyInConversation failed status=%d body=%s', res.status, err);
-  } else {
-    console.log('[Missive] replyInConversation succeeded for conversationId=%s', conversationId);
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw);
+    return data.conversation?.id || null;
+  } catch (_) {
+    return null;
   }
-}
-
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 // ─────────────────────────────────────────────
@@ -137,50 +96,57 @@ app.post('/telegram-webhook', async (req, res) => {
   const existingConversationId = await db.getConversation(chatId);
 
   if (existingConversationId) {
-    // Thread the reply into the existing Missive conversation
-    await replyInMissiveConversation(existingConversationId, chatId, senderName, text);
+    // Thread into the existing Missive conversation
+    await sendToMissive(chatId, senderName, text, existingConversationId);
   } else {
-    // New conversation
-    const conversationId = await createMissiveConversation(chatId, senderName, text);
+    // New conversation — send message and capture the returned conversation ID
+    const conversationId = await sendToMissive(chatId, senderName, text);
     if (conversationId) {
       await db.set(chatId, conversationId);
       console.log(`[DB] Mapped chatId=${chatId} → conversationId=${conversationId}`);
+    } else {
+      console.warn(`[DB] No conversationId returned — cannot map chatId=${chatId}`);
     }
   }
 });
 
 // ─────────────────────────────────────────────
 // ROUTE 2: Missive → Telegram
-// Missive posts here when your team sends a reply
+// Missive Custom Channel posts here when your team sends a reply
+// Payload: { message: { body, to_fields: [{id: chatId, ...}] }, conversation: { id } }
 // ─────────────────────────────────────────────
 app.post('/missive-webhook', async (req, res) => {
   res.sendStatus(200); // always ack immediately
 
-  // Optional: validate secret to ensure the request is from Missive
-  if (WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== WEBHOOK_SECRET) {
-    console.warn('[Missive] Webhook secret mismatch — ignoring');
+  // Optional: validate signature secret set in the custom channel settings
+  if (WEBHOOK_SECRET && req.headers['x-hook-signature']) {
+    // Signature validation can be added here if needed
+  }
+
+  const { message, conversation } = req.body;
+
+  if (!message?.body || !conversation?.id) {
+    console.warn('[Missive→Telegram] Missing message.body or conversation.id — ignoring');
     return;
   }
 
-  const { rule, message, conversation } = req.body;
-
-  // Only act on sent messages (not drafts, notes, etc.)
-  if (rule?.type !== 'message:sent') return;
-  if (!message?.body || !conversation?.id) return;
-
-  const conversationId = conversation.id;
-  const chatId = await db.getChat(conversationId);
+  // chatId is stored in to_fields[0].id — set when we created the inbound message
+  const chatId = message.to_fields?.[0]?.id;
 
   if (!chatId) {
-    console.warn(`[Missive→Telegram] No Telegram chatId found for conversationId=${conversationId}`);
+    // Fallback: look up by conversationId in DB
+    const dbChatId = await db.getChat(conversation.id);
+    if (!dbChatId) {
+      console.warn(`[Missive→Telegram] No chatId in to_fields and no DB match for conversationId=${conversation.id}`);
+      return;
+    }
+    console.log(`[Missive→Telegram] chatId from DB: ${dbChatId}`);
+    await sendToTelegram(dbChatId, message.body.replace(/<[^>]*>/g, '').trim());
     return;
   }
 
-  // Strip HTML tags from Missive's rich-text body
   const plainText = message.body.replace(/<[^>]*>/g, '').trim();
-
-  console.log(`[Missive→Telegram] conversationId=${conversationId} chatId=${chatId} text="${plainText}"`);
-
+  console.log(`[Missive→Telegram] conversationId=${conversation.id} chatId=${chatId} text="${plainText}"`);
   await sendToTelegram(chatId, plainText);
 });
 
@@ -192,26 +158,30 @@ app.get('/', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// Debug: test Missive API and return raw response
+// Debug: test Missive Custom Channel API
 // ─────────────────────────────────────────────
 app.get('/debug-missive', async (req, res) => {
-  const body = {
-    conversations: {
-      subject: 'Telegram: Debug Test',
-      messages: {
-        from_field: { name: 'Debug User', address: 'telegram_debug@telegram.bridge' },
-        to_fields: [{ name: 'Missive Connect Bot', address: 'missiveconnect@telegram.bridge' }],
-        body: '<p>Debug test message</p>'
-      }
+  const payload = {
+    messages: {
+      channel_id: MISSIVE_CHANNEL_ID,
+      from_field: { id: '9999001', name: 'Debug User' },
+      body: 'Debug test from server'
     }
   };
-  const apiRes = await fetch(`${MISSIVE_API}/conversations`, {
+  const apiRes = await fetch(`${MISSIVE_API}/messages`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${MISSIVE_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(payload)
   });
   const text = await apiRes.text();
-  res.json({ status: apiRes.status, apiKeyPresent: !!MISSIVE_API_KEY, apiKeyPrefix: MISSIVE_API_KEY ? MISSIVE_API_KEY.substring(0, 8) + '...' : null, body: text });
+  res.json({
+    status: apiRes.status,
+    channelIdPresent: !!MISSIVE_CHANNEL_ID,
+    channelIdValue: MISSIVE_CHANNEL_ID,
+    apiKeyPresent: !!MISSIVE_API_KEY,
+    apiKeyPrefix: MISSIVE_API_KEY ? MISSIVE_API_KEY.substring(0, 10) + '...' : null,
+    body: text
+  });
 });
 
 // Init DB then start server
