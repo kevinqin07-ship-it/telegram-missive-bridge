@@ -36,7 +36,7 @@ async function sendToTelegram(chatId, text) {
 async function sendToMissive(chatId, senderName, text, conversationId = null) {
   const payload = {
     messages: {
-      channel_id: MISSIVE_CHANNEL_ID,
+      account: MISSIVE_CHANNEL_ID,
       from_field: {
         id:   String(chatId),
         name: senderName
@@ -163,7 +163,7 @@ app.get('/', (req, res) => {
 app.get('/debug-missive', async (req, res) => {
   const payload = {
     messages: {
-      channel_id: MISSIVE_CHANNEL_ID,
+      account: MISSIVE_CHANNEL_ID,
       from_field: { id: '9999001', name: 'Debug User' },
       body: 'Debug test from server'
     }
