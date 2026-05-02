@@ -158,34 +158,6 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'Telegram-Missive bridge is running' });
 });
 
-// ─────────────────────────────────────────────
-// Debug: test Missive Custom Channel API
-// ─────────────────────────────────────────────
-app.get('/debug-missive', async (req, res) => {
-  const payload = {
-    messages: {
-      account: MISSIVE_CHANNEL_ID,
-      from_field: { id: '9999001', name: 'Debug User' },
-      to_fields: [{ id: '9999001', name: 'Debug User' }],
-      body: 'Debug test from server'
-    }
-  };
-  const apiRes = await fetch(`${MISSIVE_API}/messages`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${MISSIVE_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  const text = await apiRes.text();
-  res.json({
-    status: apiRes.status,
-    channelIdPresent: !!MISSIVE_CHANNEL_ID,
-    channelIdValue: MISSIVE_CHANNEL_ID,
-    apiKeyPresent: !!MISSIVE_API_KEY,
-    apiKeyPrefix: MISSIVE_API_KEY ? MISSIVE_API_KEY.substring(0, 10) + '...' : null,
-    body: text
-  });
-});
-
 // Init DB then start server
 db.init()
   .then(() => {
